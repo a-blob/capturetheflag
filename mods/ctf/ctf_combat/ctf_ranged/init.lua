@@ -47,6 +47,8 @@ local function process_ray(ray, user, look_dir, def)
 						collisiondetection = false,
 						texture = "ctf_ranged_bullethole.png",
 					})
+
+					minetest.sound_play("ctf_ranged_ricochet", {pos = hitpoint.intersection_point})
 				elseif nodedef.groups.liquid then
 					minetest.add_particlespawner({
 						amount = 10,
