@@ -43,7 +43,7 @@ Decide where you will build your map. We recommend you don't make your map large
  	- (*If applicable*) "Indestructible Water Barrier Glass" (`ctf_map:ind_water`) for underwater build-time wall. This will turn into water source (`default:water_source`) once the match begins.
   	- (*If applicable*) "Indestructible Lava Barrier Glass" (`ctf_map:ind_lava`) for build-time wall in lava. This will turn into lava source (`default:lava_source`) once the match begins.
 
-The positions the `Indestructible Red Barrier` and the `Indestructible Red Barrier Stone` are automatically calculated when you save the map. 
+The positions the build-time barrier blocks are automatically calculated when you save the map. 
 If you wish to save your map for later edits, follow the note in the section about exporting the map.
 
 ### 5. Fill out information about the map
