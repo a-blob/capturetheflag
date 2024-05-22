@@ -10,16 +10,30 @@ ctf_core.testing = {
 		local one_third     = math.ceil(0.34 * total_players)
 		local one_fourth     = math.ceil(0.25 * total_players)
 		local avg = (kd_diff + actual_kd_diff) / 2
+		local pcount_diff_limit = (
+			(players_diff <= math.min(one_fourth, 2)) or
+			(pkd >= 1.8 and players_diff <= math.min(one_third, 4))
+		)
 		if best_kd.kills + worst_kd.kills >= 30 then
 			avg = actual_kd_diff
 		end
-		return (best_kd.kills + worst_kd.kills >= 30 and best_kd.t == best_players.t) or
-		(pkd >= math.min(1, kd_diff/2) and avg >= 0.4 and (players_diff <= one_fourth or
-		(pkd >= 1.5 and players_diff <= one_third)))
+		return pcount_diff_limit and ((best_kd.kills + worst_kd.kills >= 30 and best_kd.t == best_players.t) or
+				(pkd >= math.min(1, kd_diff/2) and avg >= 0.4))
 	end
 }
 
-local function update_playertag(player, t, nametag, team_nametag, team_symbol_nametag)
+local mapload_huds = mhud.init()
+local LOADING_SCREEN_TARGET_TIME = 7
+local loading_screen_time
+
+local function update_playertag(player, t, nametag, team_nametag, symbol_nametag)
+	if not      nametag.object.set_observers or
+	   not team_nametag.object.set_observers or
+	   not symbol_nametag.object.set_observers
+	then
+		return
+	end
+
 	local entity_players = {}
 	local nametag_players = table.copy(ctf_teams.online_players[t].players)
 	local symbol_players = {}
@@ -43,16 +57,18 @@ local function update_playertag(player, t, nametag, team_nametag, team_symbol_na
 		end
 	end
 
-	team_nametag.object:set_observers(nametag_players)
-	team_symbol_nametag.object:set_observers(symbol_players)
-	nametag.object:set_observers(entity_players)
+	-- Occasionally crashes in singleplayer, so call it safely
+	       nametag.object:set_observers(entity_players )
+	  team_nametag.object:set_observers(nametag_players)
+	symbol_nametag.object:set_observers(symbol_players )
 end
 
+local tags_hidden = false
 local update_timer = false
-local function update_playertags()
-	if not update_timer then
+local function update_playertags(time)
+	if not update_timer and not tags_hidden then
 		update_timer = true
-		minetest.after(1.2, function()
+		minetest.after(time or 1.2, function()
 			update_timer = false
 			for _, p in pairs(minetest.get_connected_players()) do
 				local t = ctf_teams.get(p)
@@ -72,6 +88,83 @@ local function update_playertags()
 	end
 end
 
+local PLAYERTAGS_OFF = false
+local PLAYERTAGS_ON = true
+local function set_playertags_state(state)
+	if state == PLAYERTAGS_ON and tags_hidden then
+		tags_hidden = false
+
+		update_playertags(0)
+	elseif state == PLAYERTAGS_OFF and not tags_hidden then
+		tags_hidden = true
+
+		for _, p in pairs(minetest.get_connected_players()) do
+			local playertag = playertag.get(p)
+
+			if ctf_teams.get(p) and playertag then
+				local team_nametag = playertag.nametag_entity
+				local nametag = playertag.entity
+				local symbol_entity = playertag.symbol_entity
+
+				if nametag and team_nametag and symbol_entity and
+				nametag.object.set_observers and team_nametag.object.set_observers and symbol_entity.object.set_observers then
+					 team_nametag.object:set_observers({})
+					symbol_entity.object:set_observers({})
+					      nametag.object:set_observers({})
+				end
+			end
+		end
+	end
+end
+
+local old_announce = ctf_modebase.map_chosen
+function ctf_modebase.map_chosen(map, ...)
+	set_playertags_state(PLAYERTAGS_OFF)
+
+	mapload_huds:clear_all()
+
+	for _, p in pairs(minetest.get_connected_players()) do
+		if ctf_teams.get(p) then
+			mapload_huds:add(p, "loading_screen", {
+				hud_elem_type = "image",
+				position = {x = 0.5, y = 0.5},
+				image_scale = -100,
+				z_index = 1000,
+				texture = "[combine:1x1^[invert:rgba^[opacity:1^[colorize:#141523:255"
+			})
+
+			mapload_huds:add(p, "map_image", {
+				hud_elem_type = "image",
+				position = {x = 0.5, y = 0.5},
+				image_scale = -100,
+				z_index = 1001,
+				texture = map.dirname.."_screenshot.png^[opacity:30",
+			})
+
+			mapload_huds:add(p, "loading_text", {
+				hud_elem_type = "text",
+				position = {x = 0.5, y = 0.5},
+				alignment = {x = "center", y = "up"},
+				text_scale = 2,
+				text = "Loading Map: " .. map.name .. "...",
+				color = 0x7ec5ff,
+				z_index = 1002,
+			})
+			mapload_huds:add(p, {
+				hud_elem_type = "text",
+				position = {x = 0.5, y = 0.75},
+				alignment = {x = "center", y = "center"},
+				text = random_messages.get_random_message(),
+				color = 0xffffff,
+				z_index = 1002,
+			})
+		end
+	end
+
+	loading_screen_time = minetest.get_us_time()
+
+	return old_announce(map, ...)
+end
 
 ctf_settings.register("teammate_nametag_style", {
 	type = "list",
@@ -161,14 +254,22 @@ local function tp_player_near_flag(player)
 	local tname = ctf_teams.get(player)
 	if not tname then return end
 
-	local pos = vector.offset(ctf_map.current_map.teams[tname].flag_pos,
-		math.random(-1, 1),
-		0.5,
-		math.random(-1, 1)
-	)
-	local rotation_y = vector.dir_to_rotation(
-		vector.direction(pos, ctf_map.current_map.teams[tname].look_pos or ctf_map.current_map.flag_center)
-	).y
+	local rotation_y
+	local pos
+
+	if ctf_map.current_map.teams[tname] then
+		pos = vector.offset(ctf_map.current_map.teams[tname].flag_pos,
+			math.random(-1, 1),
+			0.5,
+			math.random(-1, 1)
+		)
+		rotation_y = vector.dir_to_rotation(
+			vector.direction(pos, ctf_map.current_map.teams[tname].look_pos or ctf_map.current_map.flag_center)
+		).y
+	else
+		pos = vector.add(ctf_map.current_map.pos1, vector.divide(ctf_map.current_map.size, 2))
+		rotation_y = player:get_look_horizontal()
+	end
 
 	local function apply()
 		player:set_pos(pos)
@@ -333,6 +434,8 @@ local delete_queue = {}
 local team_switch_after_capture = false
 
 return {
+	tp_player_near_flag = tp_player_near_flag,
+
 	on_new_match = function()
 		team_list = {}
 		for tname in pairs(ctf_map.current_map.teams) do
@@ -371,6 +474,17 @@ return {
 			ctf_modebase:get_current_mode().team_chest_items or {},
 			ctf_modebase:get_current_mode().blacklisted_nodes or {}
 		)
+
+		if loading_screen_time then
+			local total_time = (minetest.get_us_time() - loading_screen_time) / 1e6
+
+			minetest.after(math.max(0, LOADING_SCREEN_TARGET_TIME - total_time), function()
+				mapload_huds:clear_all()
+				set_playertags_state(PLAYERTAGS_ON)
+
+				ctf_modebase.build_timer.start()
+			end)
+		end
 	end,
 	on_match_end = function()
 		recent_rankings.on_match_end()
@@ -380,6 +494,8 @@ return {
 			delete_queue = {ctf_map.current_map.pos1, ctf_map.current_map.pos2}
 		end
 	end,
+	-- If you set this in a mode def it will replace the call to ctf_teams.allocate_teams() in match.lua
+	-- allocate_teams = function()
 	team_allocator = function(player)
 		player = PlayerName(player)
 
@@ -571,15 +687,7 @@ return {
 
 		celebrate_team(pteam)
 
-		local text = " has captured the flag"
-		if many_teams then
-			text = " has captured the flag of team(s) " .. HumanReadable(teamnames)
-			minetest.chat_send_all(
-				minetest.colorize(tcolor, pname) ..
-				minetest.colorize(FLAG_MESSAGE_COLOR, text)
-			)
-		end
-		ctf_modebase.announce(string.format("Player %s (team %s)%s", pname, pteam, text))
+
 
 		ctf_modebase.flag_huds.untrack_capturer(pname)
 
@@ -590,7 +698,19 @@ return {
 			score = math.max(75, math.min(500, score))
 			capture_reward = capture_reward + score
 		end
-
+		local text = " has captured the flag"
+		if many_teams then
+			text = string.format(
+				" has captured the flag of team(s) %s and got %d points",
+				HumanReadable(teamnames),
+				capture_reward
+			)
+			minetest.chat_send_all(
+				minetest.colorize(tcolor, pname) ..
+				minetest.colorize(FLAG_MESSAGE_COLOR, text)
+			)
+		end
+		ctf_modebase.announce(string.format("Player %s (team %s)%s and got %d points", pname, pteam, text, capture_reward))
 		local team_score = team_scores[pteam].score
 		for teammate in pairs(ctf_teams.online_players[pteam].players) do
 			if teammate ~= pname then
@@ -605,12 +725,12 @@ return {
 		teams_left = teams_left - #teamnames
 
 		if teams_left <= 1 then
-			local capture_text = "Player %s captured"
+			local capture_text = "Player %s captured and got %d points"
 			if many_teams then
-				capture_text = "Player %s captured the last flag"
+				capture_text = "Player %s captured the last flag and got %d points"
 			end
 
-			ctf_modebase.summary.set_winner(string.format(capture_text, minetest.colorize(tcolor, pname)))
+			ctf_modebase.summary.set_winner(string.format(capture_text, minetest.colorize(tcolor, pname), capture_reward))
 
 			local win_text = HumanReadable(pteam) .. " Team Wins!"
 
@@ -630,7 +750,7 @@ return {
 
 				for lost_player in pairs(ctf_teams.online_players[lost_team].players) do
 					team_switch_after_capture = true
-						ctf_teams.allocate_player(lost_player)
+					ctf_teams.allocate_player(lost_player)
 					team_switch_after_capture = false
 				end
 			end
@@ -699,7 +819,7 @@ return {
 		                 "5 captures, and at least 8,000 score to access the pro section."
 		if rank then
 			local captures_needed = math.max(0, 5 - (rank.flag_captures or 0))
-			local score_needed = math.max(math.max(0, 8000 - (rank.score or 0)))
+			local score_needed = math.floor(math.max(0, 8000 - (rank.score or 0)))
 			local current_kd = math.floor((rank.kills or 0) / (rank.deaths or 1) * 10)
 			current_kd = current_kd / 10
 			deny_pro = deny_pro .. " You still need " .. captures_needed
